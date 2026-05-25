@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Floating Above the Static</title>
+  <style>
+    body { margin:0; background:#000; overflow:hidden; }
+    #stage { position:relative; width:100vw; height:100vh; }
+    canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
+  </style>
+</head>
+<body>
+  <div id="stage" 
+       data-composition-id="floating-above-static" 
+       data-width="1920" 
+       data-height="1080" 
+       data-duration="120"
+       data-start="0">
+
+    <canvas id="bg-canvas" width="1920" height="1080"></canvas>
+    <canvas id="fx-canvas" width="1920" height="1080" style="mix-blend-mode: screen;"></canvas>
+
+    <audio id="main-track"
+           data-start="0" 
+           data-duration="120" 
+           data-track-index="0" 
+           data-volume="0.85"
+           src="your-suno-track.mp3">
+    </audio>
+  </div>
+
+  <script>
+    class BeatDetector {
+      constructor(analyser, opts = {}) {
+        this.analyser = analyser;
+        this.data = new Uint8Array(analyser.frequencyBinCount);
+        this.bassRange = opts.bassRange || [1, 7];
+        this.threshold = opts.threshold || 1.38;
+        this.cooldownMs = opts.cooldownMs || 165;
+        this.smoothing = opts.smoothing || 0.72;
+        this.lastEnergy = 0;
+        this.lastBeat = 0;
+        this.count = 0;
+      }
+      detect(timeMs) {
+        this.analyser.getByteFrequencyData(this.data);
+        let e = 0;
+        for (let i = this.bassRange[0]; i < this.bassRange[1]; i++) e += this.data[i];
+        e /= (this.bassRange[1] - this.bassRange[0]);
+        const smoothed = this.lastEnergy * this.smoothing + e * (1 - this.smoothing);
+        const now = timeMs;
+        const isBeat = smoothed > this.lastEnergy * this.threshold && (now - this.lastBeat) > this.cooldownMs && e > 38;
+        if (isBeat) {
+          this.lastBeat = now; this.count++; this.lastEnergy = smoothed * 0.5;
+          return { beat: true, energy: smoothed, count: this.count };
+        }
+        this.lastEnergy = smoothed;
+        return { beat: false, energy: smoothed };
+      }
+    }
+
+    const bg = document.getElementById('bg-canvas');
+    const fx = document.getElementById('fx-canvas');
+    const bgCtx = bg.getContext('2d');
+    const fxCtx = fx.getContext('2d');
+
+    let audioCtx, analyser, source, beatDetector;
+    let particles = [];
+
+    function initAudio() {
+      const audio = document.getElementById('main-track');
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      source = audioCtx.createMediaElementSource(audio);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 128;
+      source.connect(analyser);
+      analyser.connect(audioCtx.destination);
+      beatDetector = new BeatDetector(analyser, { threshold: 1.4, cooldownMs: 155 });
+    }
+
+    function createBurst(x, y, intensity) {
+      for (let i = 0; i < intensity * 7; i++) {
+        particles.push({
+          x, y,
+          vx: (Math.random()-0.5) * (5 + intensity*3),
+          vy: (Math.random()-0.5) * (5 + intensity*3) - 1.5,
+          life: 55 + intensity * 18,
+          size: 1.5 + Math.random()*3.5,
+          hue: 195 + Math.random()*50
+        });
+      }
+    }
+
+    function drawBackground(time, audioData) {
+      bgCtx.fillStyle = '#050508';
+      bgCtx.fillRect(0, 0, 1920, 1080);
+      const bass = audioData ? audioData[3] / 255 : 0.25;
+      bgCtx.strokeStyle = `hsla(200, 90%, 75%, ${0.08 + bass * 0.25})`;
+      bgCtx.lineWidth = 1.5;
+      for (let i = 0; i < 18; i++) {
+        const y = ((i * 58) + (time * 0.018) % 58) % 1080;
+        bgCtx.beginPath();
+        bgCtx.moveTo(0, y);
+        bgCtx.lineTo(1920, y + Math.sin(time/1200 + i) * 18);
+        bgCtx.stroke();
+      }
+    }
+
+    function drawFX(time, audioData, beatResult) {
+      fxCtx.clearRect(0, 0, 1920, 1080);
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx; p.y += p.vy; p.vy += 0.06; p.life--; p.vx *= 0.985;
+        if (p.life <= 0) { particles.splice(i,1); continue; }
+        fxCtx.fillStyle = `hsla(${p.hue}, 100%, 80%, ${p.life/55})`;
+        fxCtx.fillRect(p.x, p.y, p.size, p.size);
+      }
+      if (beatResult?.beat) {
+        createBurst(960 + (Math.random()-0.5)*700, 540 + (Math.random()-0.5)*400, beatResult.energy / 55);
+      }
+      const energy = audioData ? (audioData[2] + audioData[5]) / 510 : 0.3;
+      fxCtx.strokeStyle = `hsla(280, 100%, 85%, ${0.06 + energy * 0.15})`;
+      fxCtx.lineWidth = 1;
+      for (let i = 0; i < 5; i++) {
+        fxCtx.beginPath();
+        fxCtx.moveTo(0, 200 + i * 140 + Math.sin(time/900) * 30);
+        fxCtx.lineTo(1920, 220 + i * 140 + Math.cos(time/1100) * 25);
+        fxCtx.stroke();
+      }
+    }
+
+    function animate() {
+      const audio = document.getElementById('main-track');
+      const timeMs = audio.currentTime * 1000;
+      const audioData = new Uint8Array(analyser ? analyser.frequencyBinCount : 0);
+      if (analyser) analyser.getByteFrequencyData(audioData);
+      let beatResult = { beat: false };
+      if (beatDetector) beatResult = beatDetector.detect(timeMs);
+      drawBackground(timeMs, audioData);
+      drawFX(timeMs, audioData, beatResult);
+      requestAnimationFrame(animate);
+    }
+
+    window.addEventListener('load', () => {
+      const audio = document.getElementById('main-track');
+      audio.addEventListener('play', () => {
+        if (!audioCtx) initAudio();
+        animate();
+      });
+    });
+  </script>
+</body>
+</html>
